@@ -65,11 +65,9 @@ class ShortcutListener {
     for (const shortcutObj of this.shortcuts) {
       const { callback, offCallback, shortcut } = shortcutObj;
       if (this.check(shortcut)) {
-        console.log("on");
         callback();
         shortcut.on = true;
       } else if (shortcut?.on && offCallback) {
-        console.log("off");
         offCallback();
         shortcut.on = false;
       }
@@ -82,8 +80,6 @@ class ShortcutListener {
 
     if (typeof shortcut === "string") keys = this.convertShortcut(shortcut);
     if (shortcut instanceof Array) keys = shortcut;
-
-    console.log(keys);
 
     for (const key of keys) {
       if (!this.down.includes(key)) {
@@ -106,8 +102,6 @@ class ShortcutListener {
       alt: ["option"],
     };
 
-    console.log(shortcutStr);
-
     shortcutStr = shortcutStr.toLowerCase();
     for (const key in aliases) {
       aliases[key].forEach((alias) => {
@@ -121,7 +115,7 @@ class ShortcutListener {
 
 class Zoomer {
   constructor(settings) {
-    console.log("creating zoomer asd");
+    console.log("creating zoomer");
     settings = Object.assign(
       {
         root: false,
@@ -130,6 +124,7 @@ class Zoomer {
         maxZoom: 6,
         zoomSpeed: 0.1,
         shortcut: "shift",
+        smoothing: 8,
       },
       settings
     );
@@ -148,14 +143,34 @@ class Zoomer {
     this.maxZoom = settings.maxZoom;
     this.zoomSpeed = settings.zoomSpeed;
     this.shortcut = settings.shortcut;
+    this.smoothing = settings.smoothing;
     this.events = [];
     this.active = true;
-    this.zoom = 1;
+    this.zoomLevel = 1;
     this.mouseOverRoot = false;
+    this.smoothingPosBuffer = new Array(this.smoothing).fill(null);
+    this.smoothingZoomBuffer = new Array(this.smoothing).fill(1);
 
-    this.addListener(this.root, "wheel", this.onWheel.bind(this));
-    this.addListener(window, "pointermove", this.onMove.bind(this));
-    this.addListener(window, "keydown", this.onMove.bind(this));
+    // this.addListener(window, "keydown", this.move.bind(this));
+
+    this.addListener(document.body, "pointermove", (e) => {
+      this.pos = { x: e.clientX, y: e.clientY };
+    });
+
+    this.addListener(this.root, "wheel", (e) => {
+      this.zoomLevel = this.getZoom(e);
+    });
+
+    this.addListener(window, "resize", (e) => {
+      this.move(this.pos);
+    });
+
+    this.addListener(this.root, "pointerenter", (e) => {
+      if (!this.checkShortcut()) return;
+      this.root.setPointerCapture(e.pointerId);
+    });
+
+    this.startLoop();
 
     this.shortcutListener.on(
       this.shortcut,
@@ -166,6 +181,82 @@ class Zoomer {
         this.root.classList.remove("zoomer-active");
       }
     );
+  }
+
+  startLoop() {
+    this.loopEnabled = true;
+    this.step();
+  }
+
+  smooth(
+    arr,
+    newVal,
+    factor,
+    reduceCallback = (acc, cur) => {
+      return acc + cur;
+    },
+    avgCallback = (zoom, factor) => {
+      return zoom / factor;
+    },
+    initVal = 0
+  ) {
+    arr.shift();
+    arr.push(newVal);
+
+    let val = arr.reduce((acc, cur) => {
+      if (!cur) return acc;
+      return reduceCallback(acc, cur);
+    }, initVal);
+
+    val = avgCallback(val, factor);
+
+    return val;
+  }
+
+  step() {
+    if (!this.checkShortcut()) {
+      window.requestAnimationFrame(() => this.step());
+      return;
+    }
+
+    let pos = this.pos;
+    let zoom = this.zoomLevel;
+
+    if (this.smoothing !== 1) {
+      pos = this.smooth(
+        this.smoothingPosBuffer,
+        this.pos,
+        this.smoothing,
+        (acc, cur) => {
+          return {
+            x: acc.x + cur.x,
+            y: acc.y + cur.y,
+          };
+        },
+        (pos, factor) => {
+          return {
+            x: pos.x / factor,
+            y: pos.y / factor,
+          };
+        },
+        { x: 0, y: 0 }
+      );
+
+      zoom = this.smooth(
+        this.smoothingZoomBuffer,
+        this.zoomLevel,
+        this.smoothing
+      );
+
+      // console.log(JSON.stringify(pos), zoom + "x");
+    }
+
+    this.zoom(zoom);
+
+    this.move(pos);
+
+    if (!this.loopEnabled) return;
+    window.requestAnimationFrame(() => this.step());
   }
 
   addListener(element, event, handler) {
@@ -185,9 +276,11 @@ class Zoomer {
 
   destroy() {
     this.removeListeners();
-    console.log("destroying");
+    console.log("destroying zoomer");
     this.active = false;
     delete this.root.zoomer;
+    this.shortcutListener.destroy();
+    this.loopEnabled = false;
   }
 
   checkShortcut() {
@@ -196,29 +289,42 @@ class Zoomer {
     return check;
   }
 
-  onWheel(e) {
-    // if (!this.mouseOverRoot) return;
-    if (this.zoom === this.minZoom && e.deltaY > 0) return;
-    if (this.zoom === this.maxZoom && e.deltaY < 0) return;
-    if (!this.checkShortcut()) return;
-
+  getZoom(e) {
     e.preventDefault();
-    this.zoom += (e.deltaY / 125) * -this.zoomSpeed;
-    this.zoom = Math.min(Math.max(this.minZoom, this.zoom), this.maxZoom);
-
-    this.inner.style.transform = `scale(${this.zoom})`;
+    this.zoomLevel += (e.deltaY / 125) * -this.zoomSpeed;
+    this.zoomLevel = Math.min(
+      Math.max(this.minZoom, this.zoomLevel),
+      this.maxZoom
+    );
+    return this.zoomLevel;
   }
 
-  onMove(e) {
-    const { width, height, left, top } = this.root.getBoundingClientRect();
+  zoom(level) {
+    if (!this.checkShortcut()) return;
+    this.inner.style.transform = `scale(${level})`;
+  }
 
-    let x = e.clientX - left;
-    let y = e.clientY - top;
-
+  fitBounds(pos) {
+    const { width, height } = this.root.getBoundingClientRect();
+    let { x, y } = pos;
     if (x > width) x = width;
     if (y > height) y = height;
     if (x < 0) x = 0;
     if (y < 0) y = 0;
+
+    return { x, y };
+  }
+
+  move({ x, y }) {
+    if (this.zoomLevel === 1) return;
+
+    const { width, height, left, top } = this.root.getBoundingClientRect();
+
+    x = x - left;
+    y = y - top;
+
+    // fit the x and y to the bounds of the root
+    ({ x, y } = this.fitBounds({ x, y }));
 
     this.inner.style.transformOrigin = `${x}px ${y}px`;
 
@@ -231,75 +337,135 @@ class Zoomer {
   }
 }
 
-let rootQuery = ".zoomer, #ytd-player";
-let innerQuery = ".inner, .html5-video-container";
-let root = document.querySelector(rootQuery);
-let settings = {
-  minZoom: 1,
-  maxZoom: 10,
-  zoomSpeed: 0.3,
-};
+class ZoomFactory {
+  constructor(params = {}) {
+    params = Object.assign(
+      {
+        settings: {},
+        videoSelectors: {
+          default: {
+            root: ".zoomer",
+            inner: ".inner",
+          },
+        },
+      },
+      params
+    );
 
-if (root) {
-  let inner = root.querySelector(innerQuery);
+    ({ root: this.rootQuery, inner: this.innerQuery } = this.getRootSettings(
+      params.videoSelectors
+    ));
 
-  new Zoomer({
-    root,
-    inner,
-    ...settings,
-  });
-}
+    console.log("zoom settings", {
+      root: this.rootQuery,
+      inner: this.innerQuery,
+    });
 
-function getRoot(node) {
-  let root = false;
-  // console.log(node.innerHTML);
+    this.root = document.querySelector(this.rootQuery);
+    this.settings = params.settings;
 
-  if (node.matches && node.matches(rootQuery)) {
-    root = node;
-  } else if (node.querySelector && node.querySelector(rootQuery)) {
-    root = node.querySelector(rootQuery);
-  } else if (node.closest && node.closest(rootQuery)) {
-    root = node.closest(rootQuery);
+    this.create(document.body);
+    this.observe();
   }
 
-  return root;
+  getRootSettings(selectors) {
+    let rootSettings = selectors.default;
+
+    for (const key in selectors) {
+      const { url } = selectors[key];
+      if (window.location.href.includes(url)) {
+        rootSettings = selectors[key];
+      }
+    }
+
+    return rootSettings;
+  }
+
+  create(node) {
+    let root = this.getRoot(node);
+    if (!root) return;
+
+    let inner = root.querySelector(this.innerQuery);
+    if (!inner) return;
+
+    if (root?.zoomer) return;
+
+    new Zoomer({
+      root,
+      inner,
+      ...this.settings,
+    });
+  }
+
+  observe() {
+    // listen for updates to the dom and if a new root is added, add a new zoomer
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        // added nodes
+        mutation.addedNodes.forEach((node) => this.create(node));
+
+        // removed nodes
+        mutation.removedNodes.forEach((node) => {
+          let root = this.getRoot(node);
+          if (!root) return;
+          if (!root?.zoomer) return;
+
+          root.zoomer.destroy();
+        });
+      });
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+  }
+
+  getRoot(node) {
+    let root = false;
+
+    if (node.matches && node.matches(this.rootQuery)) {
+      root = node;
+    } else if (node.querySelector && node.querySelector(this.rootQuery)) {
+      root = node.querySelector(this.rootQuery);
+    } else if (node.closest && node.closest(this.rootQuery)) {
+      root = node.closest(this.rootQuery);
+    }
+
+    return root;
+  }
 }
 
-let zoomers = [];
-
-// listen for updates to the dom and if a new root is added, add a new zoomer
-const observer = new MutationObserver((mutations) => {
-  mutations.forEach((mutation) => {
-    // added nodes
-    mutation.addedNodes.forEach((node) => {
-      let root = getRoot(node);
-      if (!root) return;
-
-      let inner = root.querySelector(innerQuery);
-      if (!inner) return;
-
-      if (root?.zoomer) return;
-
-      let zoomer = new Zoomer({
-        root,
-        inner,
-        ...settings,
-      });
-      zoomers.push(zoomer);
-    });
-
-    // removed nodes
-    mutation.removedNodes.forEach((node) => {
-      let root = getRoot(node);
-      if (!root) return;
-      if (!root?.zoomer) return;
-
-      root.zoomer.destroy();
-    });
-  });
+new ZoomFactory({
+  settings: {
+    shortcut: "shift",
+    minZoom: 1,
+    maxZoom: 6,
+    zoomSpeed: 0.1,
+    smoothing: 3,
+  },
+  videoSelectors: {
+    default: {
+      root: ".zoomer",
+      inner: ".inner",
+    },
+    youtube: {
+      url: "https://www.youtube.com",
+      root: "#ytd-player",
+      inner: "video",
+    },
+    netflix: {
+      url: "https://www.netflix.com",
+      root: ".watch-video",
+      inner: "[data-uia='video-canvas']",
+    },
+    reddit: {
+      url: "https://www.reddit.com",
+      root: `div:has( > [data-testid="shreddit-player-wrapper"])`,
+      inner: `[data-testid="shreddit-player-wrapper"]`,
+    },
+  },
 });
 
-observer.observe(document.body, {
-  childList: true,
-  subtree: true,
-});
+// Bugs:
+// scrolling when not holding shift does not work on reddit

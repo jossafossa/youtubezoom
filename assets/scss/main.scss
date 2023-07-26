@@ -24,6 +24,7 @@ body {
 
 .zoomer-active {
   outline: 2px solid rgb(169, 169, 169);
+  cursor: none;
 }
 .zoomer-active
   :where(
@@ -33,4 +34,5 @@ body {
     .ytp-chrome-top
   ) {
   opacity: 0;
+  pointer-events: none;
 }
