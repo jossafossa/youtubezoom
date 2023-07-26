@@ -7,7 +7,10 @@ class ShortcutListener {
     this.listen();
 
     // when the window loses focus, clear the down array
-    this.addListener(window, "blur", () => (this.down = []));
+    this.addListener(window, "blur", () => {
+      this.down = [];
+      this.triggerShortcuts();
+    });
   }
 
   addListener(element, shortcut, callback) {
@@ -17,6 +20,18 @@ class ShortcutListener {
       callback,
     });
     element.addEventListener(shortcut, callback);
+  }
+
+  on(shortcuts, callback, offCallback) {
+    if (typeof shortcuts === "string") shortcuts = [shortcuts];
+
+    for (const shortcut of shortcuts) {
+      this.shortcuts.push({
+        shortcut: this.convertShortcut(shortcut),
+        callback,
+        offCallback,
+      });
+    }
   }
 
   removeListeners() {
@@ -34,29 +49,47 @@ class ShortcutListener {
     this.addListener(document, "keydown", (e) => {
       if (!this.down.includes(e.key.toLowerCase())) {
         this.down.push(e.key.toLowerCase());
+        this.triggerShortcuts();
       }
-      console.log(this.down);
     });
 
     this.addListener(document, "keyup", (e) => {
       this.down = this.down.filter((key) => {
         return key !== e.key.toLowerCase();
       });
-      console.log(this.down);
+      this.triggerShortcuts();
     });
+  }
+
+  triggerShortcuts() {
+    for (const shortcutObj of this.shortcuts) {
+      const { callback, offCallback, shortcut } = shortcutObj;
+      if (this.check(shortcut)) {
+        console.log("on");
+        callback();
+        shortcut.on = true;
+      } else if (shortcut?.on && offCallback) {
+        console.log("off");
+        offCallback();
+        shortcut.on = false;
+      }
+    }
   }
 
   check(shortcut) {
     let match = true;
-    let keys = this.convertShortcut(shortcut);
+    let keys = [];
+
+    if (typeof shortcut === "string") keys = this.convertShortcut(shortcut);
+    if (shortcut instanceof Array) keys = shortcut;
+
+    console.log(keys);
 
     for (const key of keys) {
       if (!this.down.includes(key)) {
         match = false;
       }
     }
-
-    console.log(keys, this.down, match);
 
     if (match && keys.length === this.down.length) {
       return true;
@@ -72,6 +105,8 @@ class ShortcutListener {
       shift: ["shift"],
       alt: ["option"],
     };
+
+    console.log(shortcutStr);
 
     shortcutStr = shortcutStr.toLowerCase();
     for (const key in aliases) {
@@ -121,6 +156,16 @@ class Zoomer {
     this.addListener(this.root, "wheel", this.onWheel.bind(this));
     this.addListener(window, "pointermove", this.onMove.bind(this));
     this.addListener(window, "keydown", this.onMove.bind(this));
+
+    this.shortcutListener.on(
+      this.shortcut,
+      () => {
+        this.root.classList.add("zoomer-active");
+      },
+      () => {
+        this.root.classList.remove("zoomer-active");
+      }
+    );
   }
 
   addListener(element, event, handler) {
@@ -147,14 +192,12 @@ class Zoomer {
 
   checkShortcut() {
     let check = this.shortcutListener.check(this.shortcut);
-    console.log(check ? "shortcut down" : "shortcut up");
 
     return check;
   }
 
   onWheel(e) {
     // if (!this.mouseOverRoot) return;
-    console.log(this.zoom, this.minZoom, this.maxZoom);
     if (this.zoom === this.minZoom && e.deltaY > 0) return;
     if (this.zoom === this.maxZoom && e.deltaY < 0) return;
     if (!this.checkShortcut()) return;
@@ -193,7 +236,7 @@ let innerQuery = ".inner, .html5-video-container";
 let root = document.querySelector(rootQuery);
 let settings = {
   minZoom: 1,
-  maxZoom: 6,
+  maxZoom: 10,
   zoomSpeed: 0.3,
 };
 
@@ -222,7 +265,7 @@ function getRoot(node) {
   return root;
 }
 
-zoomers = [];
+let zoomers = [];
 
 // listen for updates to the dom and if a new root is added, add a new zoomer
 const observer = new MutationObserver((mutations) => {
